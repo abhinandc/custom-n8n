@@ -6,6 +6,26 @@ import { jsonParse } from 'n8n-workflow';
 import { ICredentialResolver } from '@n8n/decorators';
 import { Service } from '@n8n/di';
 
+type CredentialStatus = {
+	credentialId: string;
+	resolverId: string;
+	credentialType: string;
+	status: 'missing' | 'configured';
+};
+
+function isCredentialStatus(obj: unknown): obj is CredentialStatus {
+	if (typeof obj !== 'object' || obj === null) {
+		return false;
+	}
+	const statusObj = obj as CredentialStatus;
+	return (
+		typeof statusObj.credentialId === 'string' &&
+		typeof statusObj.resolverId === 'string' &&
+		typeof statusObj.credentialType === 'string' &&
+		(statusObj.status === 'missing' || statusObj.status === 'configured')
+	);
+}
+
 @Service()
 export class CredentialResolverWorkflowService {
 	constructor(
@@ -38,6 +58,15 @@ export class CredentialResolverWorkflowService {
 		}
 	}
 
+	/**
+	 * Checks the status of all resolvable credentials in a workflow.
+	 * Tests credential availability by attempting to retrieve secrets using the provided identity token.
+	 *
+	 * @param workflowId - The workflow ID to check
+	 * @param identityToken - Bearer token for credential authorization
+	 * @returns Array of credential statuses (configured/missing) with resolver info
+	 * @throws {Error} When workflow is not found or resolver configuration is invalid
+	 */
 	async getWorkflowStatus(workflowId: string, identityToken: string) {
 		const workflow = await this.workflowRepository.get({
 			id: workflowId,
@@ -70,68 +99,63 @@ export class CredentialResolverWorkflowService {
 			}
 		}
 
+		if (credentialsToCheck.length === 0) {
+			return [];
+		}
+
 		const credentials = await this.credentialRepository.find({
 			where: {
 				id: In(credentialsToCheck.map((c) => c.credentialId)),
 				isResolvable: true,
-				// TODO: filter on isResolvable true only once we have a migration to add the column with default false
 			},
 		});
 		// Get all credentials from the DB based on the ids collected above and resolvable being true
-		//
-		const credentialsStatuses: Array<{
-			credentialId: string;
-			resolverId: string;
-			credentialType: string;
-			status: 'missing' | 'configured';
-		}> = [];
 
-		for (const credential of credentials) {
-			if (credential.isResolvable) {
-				let resolverInstance: ICredentialResolver | null = workflowResolverInstance;
-				let resolverConfig: Record<string, unknown> | null = workflowResolverConfig;
-				const credentialResolverId = credential.resolverId ?? resolverId;
-				if (credentialResolverId) {
-					if (credentialResolverId !== resolverId) {
-						const {
-							resolverInstance: credentialResolverInstance,
-							resolverConfig: credentialResolverConfig,
-						} = await this.getResolver(credentialResolverId);
-						resolverInstance = credentialResolverInstance;
-						resolverConfig = credentialResolverConfig;
-					}
+		const credentialStatusPromises = credentials.map(async (credential) => {
+			let resolverInstance: ICredentialResolver | null = workflowResolverInstance;
+			let resolverConfig: Record<string, unknown> | null = workflowResolverConfig;
+			const credentialResolverId = credential.resolverId ?? resolverId;
+			if (credentialResolverId) {
+				if (credentialResolverId !== resolverId) {
+					const {
+						resolverInstance: credentialResolverInstance,
+						resolverConfig: credentialResolverConfig,
+					} = await this.getResolver(credentialResolverId);
+					resolverInstance = credentialResolverInstance;
+					resolverConfig = credentialResolverConfig;
+				}
 
-					if (resolverConfig && resolverInstance) {
-						try {
-							await resolverInstance.getSecret(
-								credential.id,
-								{ identity: identityToken, version: 1 },
-								{
-									configuration: resolverConfig,
-									resolverName: resolverInstance.metadata.name,
-									resolverId: credentialResolverId,
-								},
-							);
-							credentialsStatuses.push({
-								credentialId: credential.id,
+				if (resolverConfig && resolverInstance) {
+					try {
+						await resolverInstance.getSecret(
+							credential.id,
+							{ identity: identityToken, version: 1 },
+							{
+								configuration: resolverConfig,
+								resolverName: resolverInstance.metadata.name,
 								resolverId: credentialResolverId,
-								status: 'configured',
-								credentialType: credential.type,
-							});
-						} catch (error) {
-							// Handle error (e.g., log it, collect status, etc.
-							credentialsStatuses.push({
-								credentialId: credential.id,
-								resolverId: credentialResolverId,
-								status: 'missing',
-								credentialType: credential.type,
-							});
-						}
+							},
+						);
+						return {
+							credentialId: credential.id,
+							resolverId: credentialResolverId,
+							status: 'configured',
+							credentialType: credential.type,
+						};
+					} catch (error) {
+						// Handle error (e.g., log it, collect status, etc.
+						return {
+							credentialId: credential.id,
+							resolverId: credentialResolverId,
+							status: 'missing',
+							credentialType: credential.type,
+						};
 					}
 				}
 			}
-		}
+			return null;
+		});
 
-		return credentialsStatuses;
+		return (await Promise.all(credentialStatusPromises)).filter(isCredentialStatus);
 	}
 }

@@ -13,6 +13,15 @@ export class WorkflowStatusController {
 		private readonly credentialResolverWorkflowService: CredentialResolverWorkflowService,
 	) {}
 
+	/**
+	 * GET /workflows/:workflowId/execution-status
+	 *
+	 * Checks if a workflow is ready to execute by validating all resolvable credentials.
+	 * Requires Bearer token authentication in Authorization header.
+	 *
+	 * @returns Workflow execution status with credential details and authorization URLs
+	 * @throws {BadRequestError} When authorization header is missing or malformed
+	 */
 	@Get('/:workflowId/execution-status', { skipAuth: true })
 	async checkWorkflowForExecution(
 		req: Request,
