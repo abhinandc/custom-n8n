@@ -285,7 +285,6 @@ function onBackButton() {
 }
 .nodeIcon {
 	--node--icon--size: 20px;
-	--node--icon--color: var(--color--text);
 	margin-right: var(--spacing--sm);
 }
 .renderedItems {
